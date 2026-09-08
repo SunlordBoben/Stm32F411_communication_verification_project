@@ -1,0 +1,25 @@
+# ===== Keil MDK-ARM 编译产物 / 用户本地配置 =====
+MDK-ARM/Listings/
+MDK-ARM/Objects/
+DebugConfig/
+*.uvoptx
+*.uvguix.*
+*.scvd
+*.iex
+*.crf
+*.d
+*.o
+*.axf
+*.map
+*.htm
+*.lst
+*.lnp
+*.dep
+*.sct
+*.build_log.htm
+*.hex
+*.bin
+*.elf
+
+# ===== 其它临时文件 =====
+*.bak
