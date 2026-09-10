@@ -819,39 +819,48 @@ uint8_t SW2505_Test_WriteFuelParams(void)
 }
 
 /**
-  * @brief  原始整帧收发测试①：发送 AA 01 C0 00 2B 08，接收7字节并打印
-  * @note   用 I2C1_RawWrite 把整帧原样发出(不带寄存器地址前缀)，
-  *         再用 I2C1_RawRead 读回7字节打印；
-  *         目标从机地址 = I2C1_GetScanAddr()(I2C1_ScanAddr侦查到的地址)；
-  *         期望收到 AA 03 00 FF FF 3E 0F(仅供参考，不比对)
-  * @retval 0: 成功  1: 发送失败/未找到设备  2: 接收失败
+  * @brief  SW356x I2C OTA 命令测试①：发送复位命令 C0，读回7字节ACK并校验
+  * @note   直接复用 I2C1_WriteReg/I2C1_ReadReg（帧格式见 i2c_ota_slave.c）：
+  *         命令 = I2C1_WriteReg(0xAA, {01,C0,00,2B,08}, 5)
+  *         (0xAA=寄存器地址/SOF, 01=CMD, C0=RESET, 00=paramLen, 2B08=CRC-16)
+  *         读ACK = I2C1_ReadReg(0xAA, rx, 7) 组合读(裸读会得全0)；
+  *         通信地址由 WriteReg/ReadReg 内部取 I2C1_ScanAddr 扫描结果；
+  *         正确 ACK = AA 03 00 FF FF 3D 8C (CRC16(AA 03 00 FF FF)=0x8C3D)
+  * @warning C0 是"复位命令"，读回 ACK 后从机会自动复位(进bootloader)!
+  * @retval 0: 成功(ACK正确)  1: 发送失败/未找到设备  2: 接收失败  3: ACK内容校验失败
   */
 uint8_t SW2505_Test_RawCmdC0(void)
 {
-    static const uint8_t tx[6] = {0xAA, 0x01, 0xC0, 0x00, 0x2B, 0x08};
-    uint8_t devAddr;
+    static const uint8_t cmdData[5] = {0x01, 0xC0, 0x00, 0x2B, 0x08}; /* type,cmd,paramLen,CRC_L,CRC_H */
+    static const uint8_t expect[7] = {0xAA, 0x03, 0x00, 0xFF, 0xFF, 0x3D, 0x8C}; /* 正确ACK */
     uint8_t rx[7] = {0};
+    uint8_t pass = 1;
     uint8_t i;
 
-    devAddr = I2C1_GetScanAddr();
-    if(0 == devAddr)
+    if(0 == I2C1_GetScanAddr())
     {
         printf("[C0] no device found by I2C1_ScanAddr, abort\r\n");
         return 1;
     }
 
-    printf("--- raw frame C0 @7bit addr 0x%02X: send 6B, read 7B ---\r\n", devAddr);
-    printf("[TX] ");
-    for(i = 0; i < sizeof(tx); i++)  printf("%02X ", tx[i]);
+    printf("--- OTA cmd C0 @7bit addr 0x%02X: WriteReg(0xAA), read 7B ---\r\n", I2C1_GetScanAddr());
+    printf("[WR] reg=0xAA data:");
+    for(i = 0; i < sizeof(cmdData); i++)  printf(" %02X", cmdData[i]);
     printf("\r\n");
 
-    if((int)sizeof(tx) != I2C1_RawWrite(devAddr, (unsigned char *)tx, (unsigned int)sizeof(tx)))
+    /* ① 写命令: 线上 = [W][0xAA][01 C0 00 2B 08] */
+    if(5 != I2C1_WriteReg(0xAA, (unsigned char *)cmdData, 5))
     {
-        printf("[C0] send FAIL\r\n");
+        printf("[C0] WriteReg FAIL\r\n");
         return 1;
     }
 
-    if(7 != I2C1_RawRead(devAddr, rx, 7))
+    /* 从机是轮询模式: T1后要等 Run() 把 ACK 装进 TX FIFO 再读，
+       延时太短会读到空 FIFO(全0); 给足 50ms 再读 */
+    HAL_Delay(50);
+
+    /* ② 组合读(寄存器0xAA): [W][0xAA]+Sr+[R] 读7字节 */
+    if(7 != I2C1_ReadReg(0xAA, rx, 7))
     {
         printf("[C0] read FAIL\r\n");
         return 2;
@@ -860,50 +869,144 @@ uint8_t SW2505_Test_RawCmdC0(void)
     printf("[RX-7] ");
     for(i = 0; i < 7; i++)  printf("%02X ", rx[i]);
     printf("\r\n");
-    printf("[C0] expect ~ AA 03 00 FF FF 3E 0F (for reference)\r\n");
-    return 0;
+
+    /* ③ 校验: 收到 AA 03 00 FF FF 3D 8C 即正确 */
+    for(i = 0; i < 7; i++)
+    {
+        if(rx[i] != expect[i])
+        {
+            pass = 0;
+            break;
+        }
+    }
+    if(1 == pass)
+    {
+        printf("[C0] PASS: ACK = AA 03 00 FF FF 3D 8C (slave will reset to bootloader)\r\n");
+        return 0;
+    }
+
+    printf("[C0] FAIL: expect AA 03 00 FF FF 3D 8C\r\n");
+    return 3;
 }
 
 /**
-  * @brief  原始整帧收发测试②：发送 AA 01 C1 00 28 08，接收21字节并打印
-  * @note   用 I2C1_RawWrite 把整帧原样发出(不带寄存器地址前缀)，
-  *         再用 I2C1_RawRead 读回21字节并打印；
-  *         目标从机地址 = I2C1_GetScanAddr()(I2C1_ScanAddr侦查到的地址)
+  * @brief  SW356x I2C OTA 命令测试②：发送命令 C1，读回22字节并打印
+  * @note   直接复用 I2C1_WriteReg/I2C1_ReadReg：
+  *         命令 = I2C1_WriteReg(0xAA, {01,C1,00,28,08}, 5)
+  *         (0xAA=寄存器地址/SOF, 01=CMD, C1=命令, 00=paramLen, 2808=CRC-16)
+  *         读回复 = I2C1_ReadReg(0xAA, rx, 22) 组合读(裸读会得全0)
+  * @warning C1(读22字节)需从机固件支持；本机 SW356x SDK 模板目前只实现 C0 复位，
+  *          若从机固件未实现 C1 会同样回全0
   * @retval 0: 成功  1: 发送失败/未找到设备  2: 接收失败
   */
 uint8_t SW2505_Test_RawCmdC1(void)
 {
-    static const uint8_t tx[6] = {0xAA, 0x01, 0xC1, 0x00, 0x28, 0x08};
-    uint8_t devAddr;
-    uint8_t rx[21] = {0};
+    static const uint8_t cmdData[5] = {0x01, 0xC1, 0x00, 0x28, 0x8E}; /* type,cmd,paramLen,CRC_L,CRC_H */
+    uint8_t rx[22] = {0};
     uint8_t i;
 
-    devAddr = I2C1_GetScanAddr();
-    if(0 == devAddr)
+    if(0 == I2C1_GetScanAddr())
     {
         printf("[C1] no device found by I2C1_ScanAddr, abort\r\n");
         return 1;
     }
 
-    printf("--- raw frame C1 @7bit addr 0x%02X: send 6B, read 21B ---\r\n", devAddr);
-    printf("[TX] ");
-    for(i = 0; i < sizeof(tx); i++)  printf("%02X ", tx[i]);
+    printf("--- OTA cmd C1 @7bit addr 0x%02X: WriteReg(0xAA), read 22B ---\r\n", I2C1_GetScanAddr());
+    printf("[WR] reg=0xAA data:");
+    for(i = 0; i < sizeof(cmdData); i++)  printf(" %02X", cmdData[i]);
     printf("\r\n");
 
-    if((int)sizeof(tx) != I2C1_RawWrite(devAddr, (unsigned char *)tx, (unsigned int)sizeof(tx)))
+    /* ① 写命令: 线上 = [W][0xAA][01 C1 00 28 08] */
+    if(5 != I2C1_WriteReg(0xAA, (unsigned char *)cmdData, 5))
     {
-        printf("[C1] send FAIL\r\n");
+        printf("[C1] WriteReg FAIL\r\n");
         return 1;
     }
 
-    if(21 != I2C1_RawRead(devAddr, rx, 21))
+    /* 从机是轮询模式: T1后要等 Run() 把数据装进 TX FIFO 再读，
+       延时太短会读到空 FIFO(全0); 给足 50ms 再读 */
+    HAL_Delay(50);
+
+    /* ② 组合读(寄存器0xAA): [W][0xAA]+Sr+[R] 读22字节 */
+    if(22 != I2C1_ReadReg(0xAA, rx, 22))
     {
         printf("[C1] read FAIL\r\n");
         return 2;
     }
 
-    printf("[RX-21] ");
-    for(i = 0; i < 21; i++)  printf("%02X ", rx[i]);
+    printf("[RX-22] ");
+    for(i = 0; i < 22; i++)  printf("%02X ", rx[i]);
     printf("\r\n");
     return 0;
+}
+
+/**
+  * @brief  往寄存器0xAA写入13字节自定义内容，读回并校验ACK
+  * @note   数据: 55 FF FF 06 00 55 AA 55 AA 5A A5 34 62
+  *         通过 I2C1_WriteReg(0xAA, ...) 发到 I2C1_ScanAddr 扫描到的从机，
+  *         线上 = [W][0xAA][55 FF FF 06 00 55 AA 55 AA 5A A5 34 62]；
+  *         写后延时等从机装载回复，再组合读回7字节，
+  *         校验与 C0 一致: 收到 AA 03 00 FF FF 3D 8C 即正确
+  * @retval 0: 成功(ACK正确)  1: 发送失败/未找到设备  2: 接收失败  3: ACK内容校验失败
+  */
+uint8_t SW2505_Test_WriteRegAA(void)
+{
+    static const uint8_t wData[13] = {0x55, 0xFF, 0xFF, 0x06, 0x00,
+                                      0x55, 0xAA, 0x55, 0xAA, 0x5A,
+                                      0xA5, 0x34, 0x62};
+    static const uint8_t expect[7] = {0xAA, 0x03, 0x00, 0xFF, 0xFF, 0x3D, 0x8C}; /* 正确ACK */
+    uint8_t rx[7] = {0};
+    uint8_t pass = 1;
+    uint8_t i;
+
+    if(0 == I2C1_GetScanAddr())
+    {
+        printf("[WAA] no device found by I2C1_ScanAddr, abort\r\n");
+        return 1;
+    }
+
+    printf("--- write reg 0xAA @7bit addr 0x%02X: 13B ---\r\n", I2C1_GetScanAddr());
+    printf("[WR] reg=0xAA data:");
+    for(i = 0; i < sizeof(wData); i++)  printf(" %02X", wData[i]);
+    printf("\r\n");
+
+    /* ① 写内容: 线上 = [W][0xAA][55 FF FF 06 00 55 AA 55 AA 5A A5 34 62] */
+    if((int)sizeof(wData) != I2C1_WriteReg(0xAA, (unsigned char *)wData, (unsigned int)sizeof(wData)))
+    {
+        printf("[WAA] WriteReg FAIL\r\n");
+        return 1;
+    }
+    printf("[WAA] write OK (13B)\r\n");
+
+    /* 从机是轮询模式: 等 Run() 把回复装进 TX FIFO 再读，延时太短会读到全0 */
+    HAL_Delay(50);
+
+    /* ② 组合读(寄存器0xAA): [W][0xAA]+Sr+[R] 读7字节 */
+    if(7 != I2C1_ReadReg(0xAA, rx, 7))
+    {
+        printf("[WAA] read FAIL\r\n");
+        return 2;
+    }
+
+    printf("[RX-7] ");
+    for(i = 0; i < 7; i++)  printf("%02X ", rx[i]);
+    printf("\r\n");
+
+    /* ③ 校验: 收到 AA 03 00 FF FF 3D 8C 即正确 */
+    for(i = 0; i < 7; i++)
+    {
+        if(rx[i] != expect[i])
+        {
+            pass = 0;
+            break;
+        }
+    }
+    if(1 == pass)
+    {
+        printf("[WAA] PASS: ACK = AA 03 00 FF FF 3D 8C\r\n");
+        return 0;
+    }
+
+    printf("[WAA] FAIL: expect AA 03 00 FF FF 3D 8C\r\n");
+    return 3;
 }

@@ -209,16 +209,27 @@ uint8_t SW2505_Test_ReadFuelParams(void);
 uint8_t SW2505_Test_WriteFuelParams(void);
 
 /**
-  * @brief  原始整帧收发测试①：发送 AA 01 C0 00 2B 08，接收7字节并打印
-  * @note   期望收到 AA 03 00 FF FF 3E 0F(仅供参考，不比对)
-  * @retval 0: 成功  1: 发送失败  2: 接收失败
+  * @brief  SW356x I2C OTA命令测试①：WriteReg(0xAA,{01,C0,00,2B,08}) 复位命令，读7字节ACK并校验
+  * @note   0xAA=寄存器地址/SOF; 读须 I2C1_ReadReg(0xAA,...) 组合读
+  *         正确ACK = AA 03 00 FF FF 3D 8C (CRC16=0x8C3D)
+  * @warning 读回ACK后从机自动复位(进bootloader)
+  * @retval 0: 成功(ACK正确)  1: 发送失败/未找到设备  2: 接收失败  3: ACK内容校验失败
   */
 uint8_t SW2505_Test_RawCmdC0(void);
 
 /**
-  * @brief  原始整帧收发测试②：发送 AA 01 C1 00 28 08，接收21字节并打印
-  * @retval 0: 成功  1: 发送失败  2: 接收失败
+  * @brief  SW356x I2C OTA命令测试②：WriteReg(0xAA,{01,C1,00,28,08})，读22字节并打印
+  * @note   0xAA=寄存器地址/SOF; 读须 I2C1_ReadReg(0xAA,...) 组合读; C1 需从机固件支持
+  * @retval 0: 成功  1: 发送失败/未找到设备  2: 接收失败
   */
 uint8_t SW2505_Test_RawCmdC1(void);
+
+/**
+  * @brief  往寄存器0xAA写入13字节内容，读回并校验ACK
+  * @note   数据: 55 FF FF 06 00 55 AA 55 AA 5A A5 34 62;
+  *         正确ACK = AA 03 00 FF FF 3D 8C (CRC16=0x8C3D)
+  * @retval 0: 成功(ACK正确)  1: 发送失败/未找到设备  2: 接收失败  3: ACK内容校验失败
+  */
+uint8_t SW2505_Test_WriteRegAA(void);
 
 #endif /* __APP_SW2505_I2CM_H__ */

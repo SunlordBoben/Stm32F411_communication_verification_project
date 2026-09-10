@@ -197,12 +197,19 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 		}
 }
 
-/* ================= 组合读写封装(设备地址固定0x3C, 100kHz) ================= */
-#define SW2505_DEV_ADDR     0x3C
+/* =========== 组合读写封装(设备地址优先取 I2C1_ScanAddr 结果) =========== */
+#define SW2505_DEV_ADDR     0x3C     /* 默认从机地址(未扫描时退回使用) */
+
+/* 实际通信地址: 有扫描结果用 I2C1_ScanAddr 侦查到的地址, 否则退回 0x3C */
+static unsigned char I2C1_GetActiveDevAddr(void)
+{
+    return (0 != gI2C1ScanDevAddr) ? gI2C1ScanDevAddr : (unsigned char)SW2505_DEV_ADDR;
+}
 
 /**
   * @brief  组合读寄存器：写寄存器地址 + repeated start + 读len字节
-  * @note   需I2C1速率100kHz；新固件返回3字节协议 [地址回显, 数据, ~(地址+数据)校验和]
+  * @note   发到 I2C1_ScanAddr 侦查到的从机地址；
+  *         SW356x OTA: 读 ACK 用 regAddr=0xAA 的组合读(裸读会得全0)
   * @param  regAddr: 寄存器地址
   * @param  buf:     接收缓冲区
   * @param  len:     读取字节数
@@ -210,9 +217,12 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
   */
 int I2C1_ReadReg(unsigned char regAddr, unsigned char *buf, unsigned int len)
 {
+    unsigned char devAddr;
+
     if(NULL == buf || 0 == len)     return -EINVAL;
 
-    if(HAL_OK != HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(SW2505_DEV_ADDR << 1),
+    devAddr = I2C1_GetActiveDevAddr();
+    if(HAL_OK != HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(devAddr << 1),
                                   regAddr, I2C_MEMADD_SIZE_8BIT,
                                   buf, (uint16_t)len, 100))
     {
@@ -224,6 +234,8 @@ int I2C1_ReadReg(unsigned char regAddr, unsigned char *buf, unsigned int len)
 
 /**
   * @brief  组合写寄存器：写寄存器地址 + 写len字节数据
+  * @note   SW356x OTA 命令帧 = I2C1_WriteReg(0xAA, {type,cmd,paramLen,CRC_L,CRC_H}, 5)，
+  *         即线上 [W][0xAA=寄存器地址][载荷5字节]，与从机 CMD_RESET 帧格式一致
   * @param  regAddr: 寄存器地址
   * @param  pData:   待写入数据
   * @param  len:     写入字节数
@@ -231,57 +243,16 @@ int I2C1_ReadReg(unsigned char regAddr, unsigned char *buf, unsigned int len)
   */
 int I2C1_WriteReg(unsigned char regAddr, unsigned char *pData, unsigned int len)
 {
+    unsigned char devAddr;
+
     if(NULL == pData || 0 == len)   return -EINVAL;
 
-    if(HAL_OK != HAL_I2C_Mem_Write(&hi2c1, (uint16_t)(SW2505_DEV_ADDR << 1),
+    devAddr = I2C1_GetActiveDevAddr();
+    if(HAL_OK != HAL_I2C_Mem_Write(&hi2c1, (uint16_t)(devAddr << 1),
                                    regAddr, I2C_MEMADD_SIZE_8BIT,
                                    pData, (uint16_t)len, 100))
     {
         printf("I2C1 WriteReg(0x%02X) err\r\n", regAddr);
-        return -EIO;
-    }
-    return (int)len;
-}
-
-/* ============ 原始多字节整帧收发(无寄存器前缀, 阻塞式) ============ */
-
-/**
-  * @brief  原始多字节写：整帧作为数据直接发出(不带寄存器地址)
-  * @note   用于发送自定义协议帧(如 AA 01 C0 00 2B 08)；
-  *         目标从机地址由 devAddr 指定(7位, 可传 I2C1_GetScanAddr() 的扫描结果)
-  * @param  devAddr: 目标从机7位地址
-  * @param  buf:     待发送数据
-  * @param  len:     发送字节数
-  * @retval 成功返回实际发送字节数  失败返回负errno
-  */
-int I2C1_RawWrite(unsigned char devAddr, unsigned char *buf, unsigned int len)
-{
-    if(0 == devAddr || NULL == buf || 0 == len)     return -EINVAL;
-
-    if(HAL_OK != HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(devAddr << 1),
-                                         buf, (uint16_t)len, 100))
-    {
-        printf("I2C1 RawWrite err\r\n");
-        return -EIO;
-    }
-    return (int)len;
-}
-
-/**
-  * @brief  原始多字节读：直接从从机读len字节(不带寄存器地址)
-  * @param  devAddr: 目标从机7位地址
-  * @param  buf:     接收缓冲区
-  * @param  len:     读取字节数
-  * @retval 成功返回实际读取字节数  失败返回负errno
-  */
-int I2C1_RawRead(unsigned char devAddr, unsigned char *buf, unsigned int len)
-{
-    if(0 == devAddr || NULL == buf || 0 == len)     return -EINVAL;
-
-    if(HAL_OK != HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(devAddr << 1),
-                                        buf, (uint16_t)len, 100))
-    {
-        printf("I2C1 RawRead err\r\n");
         return -EIO;
     }
     return (int)len;
