@@ -77,7 +77,7 @@ void I2c_test()
 	}
 	
 	/* ===== 试探/扫描总线上所有I2C设备地址(0x01~0x7F) ===== */
-	I2C1_ScanAddr();
+	//I2C1_ScanAddr();
 	
 	/* ===== 新驱动测试：pI2C->Write记录地址 + pI2C->Read组合读3字节 ===== */
 	/* 从机复位后通信自恢复测试(拔插Type-C线模拟从机复位) */
@@ -116,16 +116,16 @@ void I2c_test()
 	//SW2505_Test_BackToBackStress(1000000);
 
 	/* 原始整帧收发测试: ①发 AA 01 C0 00 2B 08 读7字节  ②发 AA 01 C1 00 28 08 读22字节 */
-	SW2505_Test_RawCmdC0();
-	SW2505_Test_WriteRegAA();
+	//SW2505_Test_RawCmdC0();
+	//SW2505_Test_WriteRegAA();
 	//HAL_Delay(100);
-	SW2505_Test_RawCmdC1();
+	//SW2505_Test_RawCmdC1();
 
 	/* 往寄存器0xAA写13字节: 55 FF FF 06 00 55 AA 55 AA 5A A5 34 62 */
 	//SW2505_Test_WriteRegAA();
 
 	/* PB13 EXTI 跳变沿测试: 中断内计数+读电平, 主循环打印(阻塞, 不返回) */
-	//PB13_Exti_Test();
+	PB13_Exti_Test();
 
 }
 
